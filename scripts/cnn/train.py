@@ -19,14 +19,23 @@ import numpy as np
 import torch
 from torch import nn
 
-from ..epn612.adaptation import BoardAdaptationConfig
-from ..epn612.dataset import (
-    EPN612DatasetConfig,
-    WindowConfig,
-    build_epn612_datasets,
-)
+if __package__ == "cnn":
+    from epn612.adaptation import BoardAdaptationConfig
+    from epn612.dataset import (
+        EPN612DatasetConfig,
+        WindowConfig,
+        build_epn612_datasets,
+    )
+else:
+    from ..epn612.adaptation import BoardAdaptationConfig
+    from ..epn612.dataset import (
+        EPN612DatasetConfig,
+        WindowConfig,
+        build_epn612_datasets,
+    )
 
 if __package__:  # Installed package or ``python -m cnn.train``.
+    from .evaluation_cnn import compute_test_metrics, save_results
     from .training import (
         TCNNConfig,
         TrainingConfig,
@@ -36,9 +45,8 @@ if __package__:  # Installed package or ``python -m cnn.train``.
         fit,
         save_checkpoint,
     )
-    from .evaluation_cnn import compute_test_metrics, save_results
-    
 else:  # Direct ``python scripts/cnn/train.py`` execution.
+    from evaluation_cnn import compute_test_metrics, save_results
     from training import (
         TCNNConfig,
         TrainingConfig,
@@ -49,10 +57,7 @@ else:  # Direct ``python scripts/cnn/train.py`` execution.
         save_checkpoint,
     )
 
-    from evaluation_cnn import compute_test_metrics, save_results
-
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
-USE_NOTCH = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,12 +105,15 @@ DEFAULT_CONFIG = ExperimentConfig(
             highpass_hz=20.0,
             lowpass_hz=500.0,
             filter_order=1,
-            notch=USE_NOTCH, 
+            rectify=False,
+            notch=False,
+            notch_hz=50.0,
         ),
         windows=WindowConfig(
             size_samples=400,  # 200 ms at 2 kHz
             step_samples=200,  # 50% overlap
             max_per_trial=10,
+            sequence_length=1,
         ),
     ),
     model=TCNNConfig(
@@ -114,6 +122,8 @@ DEFAULT_CONFIG = ExperimentConfig(
         temporal_strides=(2, 2, 1),
         temporal_dilations=(1, 2, 4),
         n_filters=(32, 32, 64, 64),
+        dropout=0.0,
+        sequence_hidden_size=None,
     ),
     training=TrainingConfig(
         epochs=10,
@@ -124,6 +134,7 @@ DEFAULT_CONFIG = ExperimentConfig(
         adam_epsilon=1e-8,
         label_smoothing=0.0,
         num_workers=0,
+        channel_rotation=False,
     ),
 )
 
@@ -171,7 +182,15 @@ def run_experiment(config: ExperimentConfig) -> Path:
     evaluation = compute_test_metrics(model, loaders.test, device, datasets.class_labels)
     print(f"test balanced acc {evaluation.balanced_accuracy:.2f} | macro F1 {evaluation.macro_f1:.2f}")
     window_ms = 1000 * config.data.windows.size_samples / config.data.adaptation.target_sampling_rate_hz
-    save_results(evaluation, history, datasets.participant_count, config.training.epochs, window_ms)
+    variant = experiment_variant(config)
+    save_results(
+        evaluation,
+        history,
+        datasets.participant_count,
+        config.training.epochs,
+        window_ms,
+        variant,
+    )
 
     # 6. Export CPU weights and everything needed to reconstruct the model.
     destination = checkpoint_path(config, datasets.participant_count)
@@ -179,16 +198,16 @@ def run_experiment(config: ExperimentConfig) -> Path:
         model,
         destination,
         {
-            "format_version": 3,
-            "architecture": "TCNN",
+            "format_version": 4,
+            "architecture": (
+                "TCNN_GRU"
+                if config.model.sequence_hidden_size is not None
+                else "TCNN"
+            ),
             "model_config": asdict(config.model),
             "class_labels": datasets.class_labels,
             "input": {
-                "shape": (
-                    "batch",
-                    config.model.n_channels,
-                    config.data.windows.size_samples,
-                ),
+                "shape": input_shape(config),
                 "dtype": "float32",
                 "sampling_rate_hz": config.data.adaptation.target_sampling_rate_hz,
                 "normalization": {
@@ -244,6 +263,36 @@ def parse_config(argv: list[str] | None = None) -> ExperimentConfig:
         default=DEFAULT_CONFIG.data.windows.max_per_trial,
     )
     parser.add_argument(
+        "--sequence-length",
+        type=positive_int,
+        default=DEFAULT_CONFIG.data.windows.sequence_length,
+        help="Causal windows per sample; values above one enable TCNN-GRU",
+    )
+    parser.add_argument(
+        "--sequence-hidden-size",
+        type=positive_int,
+        default=64,
+        help="GRU hidden size when --sequence-length is above one",
+    )
+    parser.add_argument(
+        "--rectify",
+        action=argparse.BooleanOptionalAction,
+        default=DEFAULT_CONFIG.data.adaptation.rectify,
+        help="Apply full-wave rectification after filtering",
+    )
+    parser.add_argument(
+        "--notch",
+        action=argparse.BooleanOptionalAction,
+        default=DEFAULT_CONFIG.data.adaptation.notch,
+        help="Apply the configured mains-frequency notch filter",
+    )
+    parser.add_argument(
+        "--notch-hz",
+        type=positive_float,
+        default=DEFAULT_CONFIG.data.adaptation.notch_hz,
+        help="Notch-filter frequency in Hz when --notch is enabled",
+    )
+    parser.add_argument(
         "--epochs", type=positive_int, default=DEFAULT_CONFIG.training.epochs
     )
     parser.add_argument(
@@ -255,6 +304,23 @@ def parse_config(argv: list[str] | None = None) -> ExperimentConfig:
         "--learning-rate",
         type=positive_float,
         default=DEFAULT_CONFIG.training.learning_rate,
+    )
+    parser.add_argument(
+        "--weight-decay",
+        type=non_negative_float,
+        default=DEFAULT_CONFIG.training.weight_decay,
+    )
+    parser.add_argument(
+        "--dropout",
+        type=probability,
+        default=DEFAULT_CONFIG.model.dropout,
+        help="Feature-map dropout probability",
+    )
+    parser.add_argument(
+        "--channel-rotation",
+        action=argparse.BooleanOptionalAction,
+        default=DEFAULT_CONFIG.training.channel_rotation,
+        help="Randomly rotate the eight electrode channels during training",
     )
     parser.add_argument("--device", default=DEFAULT_CONFIG.device)
     parser.add_argument("--model-name", default=DEFAULT_CONFIG.model_name)
@@ -271,12 +337,20 @@ def parse_config(argv: list[str] | None = None) -> ExperimentConfig:
         size_samples=args.window_size,
         step_samples=args.window_step,
         max_per_trial=args.max_windows_per_trial,
+        sequence_length=args.sequence_length,
+    )
+    adaptation = replace(
+        DEFAULT_CONFIG.data.adaptation,
+        rectify=args.rectify,
+        notch=args.notch,
+        notch_hz=args.notch_hz,
     )
     data = replace(
         DEFAULT_CONFIG.data,
         root=args.dataset_root,
         participant_id=args.user,
         max_participants=args.max_users,
+        adaptation=adaptation,
         windows=windows,
     )
     training = replace(
@@ -284,10 +358,20 @@ def parse_config(argv: list[str] | None = None) -> ExperimentConfig:
         epochs=args.epochs,
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
+        weight_decay=args.weight_decay,
+        channel_rotation=args.channel_rotation,
+    )
+    model = replace(
+        DEFAULT_CONFIG.model,
+        dropout=args.dropout,
+        sequence_hidden_size=(
+            args.sequence_hidden_size if args.sequence_length > 1 else None
+        ),
     )
     return replace(
         DEFAULT_CONFIG,
         data=data,
+        model=model,
         training=training,
         device=args.device,
         random_seed=args.seed,
@@ -343,8 +427,63 @@ def checkpoint_path(config: ExperimentConfig, participant_count: int) -> Path:
         / config.data.adaptation.target_sampling_rate_hz
     )
     duration = f"{window_ms:g}".replace(".", "p")
-    filename = f"{config.model_name}_{participant_count}users_{duration}mswindow.pt"
+    variant = experiment_variant(config)
+    filename = (
+        f"{config.model_name}_{participant_count}users_{duration}mswindow_{variant}.pt"
+    )
     return config.output_directory / filename
+
+
+def preprocessing_variant(config: BoardAdaptationConfig) -> str:
+    """Return a filesystem-safe label for the preprocessing variant."""
+
+    rectification = "rectified" if config.rectify else "raw"
+    if not config.notch:
+        return f"{rectification}_no-notch"
+    notch_hz = f"{config.notch_hz:g}".replace(".", "p")
+    return f"{rectification}_notch{notch_hz}Hz"
+
+
+def experiment_variant(config: ExperimentConfig) -> str:
+    """Return a unique label for preprocessing and modeling ablations."""
+
+    parts = [preprocessing_variant(config.data.adaptation)]
+    if config.training.channel_rotation:
+        parts.append("rotation")
+    if config.training.weight_decay > 0 or config.model.dropout > 0:
+        weight_decay = filesystem_number(config.training.weight_decay)
+        dropout = filesystem_number(config.model.dropout)
+        parts.append(f"regularized-wd{weight_decay}-dropout{dropout}")
+    if config.data.windows.sequence_length > 1:
+        parts.append(
+            f"sequence{config.data.windows.sequence_length}"
+            f"-gru{config.model.sequence_hidden_size}"
+        )
+    return "_".join(parts)
+
+
+def input_shape(config: ExperimentConfig) -> tuple[str | int, ...]:
+    """Return the exported input contract for window or sequence models."""
+
+    window_shape: tuple[str | int, ...] = (
+        "batch",
+        config.model.n_channels,
+        config.data.windows.size_samples,
+    )
+    if config.data.windows.sequence_length == 1:
+        return window_shape
+    return (
+        "batch",
+        config.data.windows.sequence_length,
+        config.model.n_channels,
+        config.data.windows.size_samples,
+    )
+
+
+def filesystem_number(value: float) -> str:
+    """Format a numeric hyperparameter for artifact and result paths."""
+
+    return f"{value:g}".replace(".", "p").replace("-", "m")
 
 
 def positive_int(value: str) -> int:
@@ -362,6 +501,24 @@ def positive_float(value: str) -> float:
     number = float(value)
     if not math.isfinite(number) or number <= 0:
         raise argparse.ArgumentTypeError("expected a positive number")
+    return number
+
+
+def non_negative_float(value: str) -> float:
+    """Parse a finite non-negative float for argparse."""
+
+    number = float(value)
+    if not math.isfinite(number) or number < 0:
+        raise argparse.ArgumentTypeError("expected a non-negative number")
+    return number
+
+
+def probability(value: str) -> float:
+    """Parse a probability in [0, 1) for argparse."""
+
+    number = float(value)
+    if not math.isfinite(number) or not 0 <= number < 1:
+        raise argparse.ArgumentTypeError("expected a number in [0, 1)")
     return number
 
 

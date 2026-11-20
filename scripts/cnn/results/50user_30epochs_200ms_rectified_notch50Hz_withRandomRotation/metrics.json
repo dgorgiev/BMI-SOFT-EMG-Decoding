@@ -1,0 +1,64 @@
+{
+  "accuracy": 0.6826512455516014,
+  "balanced_accuracy": 0.6769294495029627,
+  "macro_f1": 0.6770357318270636,
+  "labels": [
+    "fist",
+    "noGesture",
+    "open",
+    "pinch",
+    "waveIn",
+    "waveOut"
+  ],
+  "classification_report": {
+    "fist": {
+      "precision": 0.6123417721518988,
+      "recall": 0.6313213703099511,
+      "f1-score": 0.6216867469879518,
+      "support": 1839.0
+    },
+    "noGesture": {
+      "precision": 0.9748995983935743,
+      "recall": 0.971,
+      "f1-score": 0.9729458917835672,
+      "support": 2000.0
+    },
+    "open": {
+      "precision": 0.5363057324840764,
+      "recall": 0.4722378014582165,
+      "f1-score": 0.5022368028631077,
+      "support": 1783.0
+    },
+    "pinch": {
+      "precision": 0.6121097445600757,
+      "recall": 0.6683884297520661,
+      "f1-score": 0.6390123456790123,
+      "support": 1936.0
+    },
+    "waveIn": {
+      "precision": 0.7325268817204301,
+      "recall": 0.6182643221781055,
+      "f1-score": 0.6705629037219317,
+      "support": 1763.0
+    },
+    "waveOut": {
+      "precision": 0.6165137614678899,
+      "recall": 0.7003647733194373,
+      "f1-score": 0.6557696999268114,
+      "support": 1919.0
+    },
+    "accuracy": 0.6826512455516014,
+    "macro avg": {
+      "precision": 0.6807829151296575,
+      "recall": 0.6769294495029627,
+      "f1-score": 0.6770357318270636,
+      "support": 11240.0
+    },
+    "weighted avg": {
+      "precision": 0.6843156675259702,
+      "recall": 0.6826512455516014,
+      "f1-score": 0.6817094559998917,
+      "support": 11240.0
+    }
+  }
+}

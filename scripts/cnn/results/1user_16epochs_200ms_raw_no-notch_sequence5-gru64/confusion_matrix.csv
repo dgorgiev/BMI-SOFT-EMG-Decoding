@@ -1,0 +1,7 @@
+,fist,noGesture,open,pinch,waveIn,waveOut
+fist,28,0,4,0,0,0
+noGesture,0,40,0,0,0,0
+open,0,0,25,1,0,0
+pinch,1,2,6,31,0,0
+waveIn,0,0,0,0,24,1
+waveOut,0,0,0,0,0,40

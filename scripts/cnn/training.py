@@ -24,6 +24,8 @@ class TCNNConfig:
     temporal_strides: tuple[int, int, int] = (2, 2, 1)
     temporal_dilations: tuple[int, int, int] = (1, 2, 4)
     n_filters: tuple[int, int, int, int] = (32, 32, 64, 64)
+    dropout: float = 0.0
+    sequence_hidden_size: int | None = None
 
     def __post_init__(self) -> None:
         if self.n_channels <= 0:
@@ -40,6 +42,10 @@ class TCNNConfig:
             raise ValueError("temporal_dilations must contain three positive integers")
         if len(self.n_filters) != 4 or any(value <= 0 for value in self.n_filters):
             raise ValueError("n_filters must contain four positive integers")
+        if not math.isfinite(self.dropout) or not 0 <= self.dropout < 1:
+            raise ValueError("dropout must be in [0, 1)")
+        if self.sequence_hidden_size is not None and self.sequence_hidden_size <= 0:
+            raise ValueError("sequence_hidden_size must be positive or None")
 
     @property
     def temporal_receptive_field_samples(self) -> int:
@@ -69,6 +75,7 @@ class TrainingConfig:
     adam_epsilon: float = 1e-8
     label_smoothing: float = 0.0
     num_workers: int = 0
+    channel_rotation: bool = False
 
     def __post_init__(self) -> None:
         if self.epochs <= 0 or self.batch_size <= 0:
@@ -106,6 +113,27 @@ class DataLoaders:
     test: DataLoader
 
 
+class CyclicChannelRotationDataset(Dataset):
+    """Apply one random cyclic electrode shift to each training sample."""
+
+    def __init__(self, dataset: Dataset) -> None:
+        self.dataset = dataset
+
+    def __len__(self) -> int:
+        return len(self.dataset)
+
+    def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor]:
+        signals, target = self.dataset[index]
+        if signals.ndim not in (2, 3):
+            raise ValueError(
+                "Expected a window (channels, time) or sequence "
+                "(sequence, channels, time)"
+            )
+        channel_count = signals.shape[-2]
+        shift = int(torch.randint(channel_count, (1,)).item())
+        return torch.roll(signals, shifts=shift, dims=-2), target
+
+
 def build_tcnn(config: TCNNConfig, n_classes: int) -> TCNN:
     """Construct a TCNN directly from its visible configuration."""
 
@@ -116,6 +144,8 @@ def build_tcnn(config: TCNNConfig, n_classes: int) -> TCNN:
         temporal_strides=config.temporal_strides,
         temporal_dilations=config.temporal_dilations,
         n_filters=config.n_filters,
+        dropout=config.dropout,
+        sequence_hidden_size=config.sequence_hidden_size,
     )
 
 
@@ -133,9 +163,14 @@ def build_data_loaders(
         "batch_size": config.batch_size,
         "num_workers": config.num_workers,
     }
+    training_data = (
+        CyclicChannelRotationDataset(train_dataset)
+        if config.channel_rotation
+        else train_dataset
+    )
     return DataLoaders(
         train=DataLoader(
-            train_dataset,
+            training_data,
             shuffle=True,
             generator=torch.Generator().manual_seed(random_seed),
             **common,

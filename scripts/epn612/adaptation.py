@@ -39,6 +39,7 @@ class BoardAdaptationConfig:
     highpass_hz: float = 20.0
     lowpass_hz: float = 500.0
     filter_order: int = 1
+    rectify: bool = False
     notch: bool = False
     notch_hz: float = 50.0 
     
@@ -153,6 +154,9 @@ def mimic_board_analog_filter(
     if config.notch:                                                                  # optional: remove mains noise
         b, a = iirnotch(config.notch_hz, Q=30.0, fs=config.target_sampling_rate_hz)   # narrow notch at notch_hz
         filtered = lfilter(b, a, filtered, axis=-1)       
+
+    if config.rectify:
+        filtered = np.abs(filtered)
         
     return np.asarray(filtered, dtype=np.float32)
 

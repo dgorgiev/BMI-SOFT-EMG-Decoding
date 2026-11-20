@@ -86,8 +86,10 @@ def save_confusion_matrix_plot(evaluation, path):
     plt.close()                                      # free memory
 
 
-def save_results(evaluation, history, users, epochs, window_ms):
-    folder = Path(f"scripts/cnn/results/{users}user_{epochs}epochs_{window_ms:g}ms_withRandomRotation")
+def save_results(evaluation, history, users, epochs, window_ms, variant):
+    folder = Path(
+        f"scripts/cnn/results/{users}user_{epochs}epochs_{window_ms:g}ms_{variant}"
+    )
     folder.mkdir(parents=True, exist_ok=True)                                           # create the folder if needed
 
     save_loss_curve(history, folder / "loss_curve.png")    
@@ -95,7 +97,7 @@ def save_results(evaluation, history, users, epochs, window_ms):
     save_confusion_matrix_plot(evaluation, folder / "confusion_matrix.png")  # confusion matrix image
 
     with open(folder / "metrics.json", "w") as file:                         # accuracy, F1, report, …
-        json.dump(evaluation.as_dict(), file, indent=2)
+        json.dump({"variant": variant, **evaluation.as_dict()}, file, indent=2)
 
     matrix = pd.DataFrame(
         evaluation.confusion_matrix,

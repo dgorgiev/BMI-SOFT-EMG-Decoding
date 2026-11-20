@@ -80,3 +80,15 @@ Run the automated tests with:
 ```bash
 poetry run pytest -q
 ```
+
+### Export for the STM32WBA65
+
+Use a separate Python 3.12 environment for the firmware exporter. ExecuTorch 1.6.0 installs the corresponding PyTorch 2.15.0 dependency.
+
+```sh
+python3.12 -m venv artifacts/executorch-venv
+artifacts/executorch-venv/bin/python -m pip install 'executorch==1.6.0'
+artifacts/executorch-venv/bin/python -m scripts.cnn.export_executorch
+```
+
+The default checkpoint is the 50-user, rotation-augmented, five-window TCNN–GRU model. The export writes the split FP32 programs and their firmware configuration to `artifacts/cnn/executorch`. For a compatible custom checkpoint, use `--checkpoint`. To generate subject-disjoint replay inputs and eager PyTorch references, run `poetry run python -m scripts.cnn.create_stm32_validation_data`. Supply the resulting `sequence_inputs.npy` with `--validation-inputs` to verify the exported models against PyTorch on that set. See the BMI-EMG-Firmware README for the Arm build and SWD flashing commands.

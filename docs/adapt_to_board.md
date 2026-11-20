@@ -1,5 +1,7 @@
 # Adapting the Model to an Embedded System - Research & Assessment
 
+This assessment predates the TCNN–GRU deployment. The current WBA65 firmware uses ExecuTorch. See the [STM32 export instructions](../README.md#export-for-the-stm32wba65) for the current workflow.
+
 **Project:** N-pulse Prosthetic arm control using Machine Learning on EMG signals  
 **Goal:** Prepare the integration pipeline to deploy an ML model on an embedded system
 

@@ -30,6 +30,32 @@ WindowDataset: TypeAlias = Dataset[tuple[torch.Tensor, torch.Tensor]]
 DATASET_SPLIT_NAMES = ("train", "validation", "test")
 
 
+class SequenceTensorDataset(Dataset):
+    """Expose causal sequences without duplicating the underlying windows."""
+
+    def __init__(
+        self,
+        signals: torch.Tensor,
+        targets: torch.Tensor,
+        context_indices: torch.Tensor,
+    ) -> None:
+        if signals.ndim != 3:
+            raise ValueError("signals must have shape (samples, channels, time)")
+        if targets.ndim != 1 or len(targets) != len(signals):
+            raise ValueError("targets must define one label per signal window")
+        if context_indices.ndim != 2 or len(context_indices) != len(signals):
+            raise ValueError("context_indices must define one sequence per window")
+        self.signals = signals
+        self.targets = targets
+        self.context_indices = context_indices
+
+    def __len__(self) -> int:
+        return len(self.targets)
+
+    def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor]:
+        return self.signals[self.context_indices[index]], self.targets[index]
+
+
 @dataclass(frozen=True, slots=True)
 class WindowConfig:
     """How labelled intervals are converted into model inputs."""
@@ -37,12 +63,15 @@ class WindowConfig:
     size_samples: int = 400
     step_samples: int = 200
     max_per_trial: int | None = 10
+    sequence_length: int = 1
 
     def __post_init__(self) -> None:
         if self.size_samples <= 0 or self.step_samples <= 0:
             raise ValueError("Window size and step must be positive")
         if self.max_per_trial is not None and self.max_per_trial <= 0:
             raise ValueError("max_per_trial must be positive or None")
+        if self.sequence_length <= 0:
+            raise ValueError("sequence_length must be positive")
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,6 +155,22 @@ def build_epn612_datasets(
     label_to_index = {label: index for index, label in enumerate(config.class_labels)}
     windows: dict[str, list[np.ndarray]] = {name: [] for name in DATASET_SPLIT_NAMES}
     labels: dict[str, list[int]] = {name: [] for name in DATASET_SPLIT_NAMES}
+    contexts: dict[str, list[list[int]]] = {
+        name: [] for name in DATASET_SPLIT_NAMES
+    }
+
+    def add_trial(split: str, trial: EMGTrial) -> None:
+        extracted = extract_trial_windows(trial, config)
+        offset = len(windows[split])
+        windows[split].extend(extracted)
+        local_contexts = build_causal_sequence_indices(
+            len(extracted),
+            config.windows.sequence_length,
+        )
+        contexts[split].extend(
+            [[offset + index for index in context] for context in local_contexts]
+        )
+        labels[split].extend([label_to_index[trial.gesture]] * len(extracted))
 
     if config.participant_id is not None:
         participant = selection.participants[0]
@@ -144,9 +189,7 @@ def build_epn612_datasets(
         )
         for trial in trials:
             split = trial_assignments[trial.trial_id]
-            extracted = extract_trial_windows(trial, config)
-            windows[split].extend(extracted)
-            labels[split].extend([label_to_index[trial.gesture]] * len(extracted))
+            add_trial(split, trial)
     else:
         participant_split_names = {
             "train": "train",
@@ -163,9 +206,7 @@ def build_epn612_datasets(
             ):
                 if trial.gesture not in label_to_index:
                     continue
-                extracted = extract_trial_windows(trial, config)
-                windows[split].extend(extracted)
-                labels[split].extend([label_to_index[trial.gesture]] * len(extracted))
+                add_trial(split, trial)
 
     normalization = fit_channel_normalization(
         windows["train"],
@@ -177,6 +218,9 @@ def build_epn612_datasets(
             windows[split],
             labels[split],
             normalization,
+            sequence_indices=(
+                contexts[split] if config.windows.sequence_length > 1 else None
+            ),
         )
         for split in DATASET_SPLIT_NAMES
     }
@@ -315,16 +359,43 @@ def window_start_indices(
     return starts
 
 
+def build_causal_sequence_indices(
+    window_count: int,
+    sequence_length: int,
+) -> list[list[int]]:
+    """Build padded causal contexts while preserving one sample per window."""
+
+    if window_count < 0:
+        raise ValueError("window_count cannot be negative")
+    if sequence_length <= 0:
+        raise ValueError("sequence_length must be positive")
+    contexts: list[list[int]] = []
+    for end in range(window_count):
+        start = max(0, end - sequence_length + 1)
+        context = list(range(start, end + 1))
+        padding = [context[0]] * (sequence_length - len(context))
+        contexts.append([*padding, *context])
+    return contexts
+
+
 def _to_tensor_dataset(
     split: str,
     windows: list[np.ndarray],
     labels: list[int],
     normalization: ChannelNormalizationStats,
-) -> TensorDataset:
+    *,
+    sequence_indices: list[list[int]] | None,
+) -> WindowDataset:
     if not windows:
         raise ValueError(f"EPN-612 produced no {split} windows")
     signals = torch.from_numpy(
         normalize_emg_channels(np.stack(windows), normalization)
     ).float()
     targets = torch.tensor(labels, dtype=torch.long)
-    return TensorDataset(signals, targets)
+    if sequence_indices is None:
+        return TensorDataset(signals, targets)
+    return SequenceTensorDataset(
+        signals,
+        targets,
+        torch.tensor(sequence_indices, dtype=torch.long),
+    )
